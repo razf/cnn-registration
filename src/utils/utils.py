@@ -114,7 +114,7 @@ def tps_warp(Y, T, Y_image, out_shape):
 def checkboard(I1, I2, n=7):
     assert I1.shape == I2.shape
     height, width, channels = I1.shape
-    hi, wi = height/n, width/n
+    hi, wi = int(height/n), int(width/n)
     outshape = (hi*n, wi*n, channels)
 
     out_image = np.zeros(outshape, dtype='uint8')

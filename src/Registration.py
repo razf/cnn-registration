@@ -10,6 +10,8 @@ import cv2
 from lap import lapjv
 from utils.shape_context import ShapeContext
 import matplotlib.pyplot as plt
+from itertools import product as product
+import os
 
 class CNN(object):
     def __init__(self):
@@ -97,14 +99,14 @@ class CNN(object):
 
         C = C_all[np.where(quality >= tau_max)]
         cnt = C.shape[0]
-
+		
         # select prematched feature points
         X, Y = X[C[:, 1]], Y[C[:, 0]]
         PD = PD[np.repeat(np.reshape(C[:, 1], [cnt, 1]), cnt, axis=1),
                 np.repeat(np.reshape(C[:, 0], [1, cnt]), cnt, axis=0)]
 
         N = X.shape[0]
-        M = X.shape[0]
+        M = Y.shape[0]
         assert M == N
 
         # precalculation of feature match
@@ -116,6 +118,7 @@ class CNN(object):
         while np.where(quality >= tau_max)[0].shape[0] <= 0.5 * cnt: tau_max -= 0.01
         tau = tau_max
         delta = (tau_max - tau_min) / 10.0
+        delta = 0
 
         SCX = self.SC.compute(X)
 
@@ -186,3 +189,121 @@ class CNN(object):
 
         print('finish: itr %d, Q %d, tau %d' % (itr, Q, tau))
         return ((X*224.0)+112.0)*Xscale, ((Y*224.0)+112.0)*Yscale, ((Z*224.0)+112.0)*Xscale
+		
+		
+    def draw_matches(self, IX_orig, IY_orig, path):
+        # set parameters
+        tolerance = self.tolerance
+        freq = self.freq
+        epsilon = self.epsilon
+        omega = self.omega
+        beta = self.beta
+        lambd = self.lambd
+
+        # resize image
+        Xscale = 1.0 * np.array(IX_orig.shape[:2]) / self.shape
+        Yscale = 1.0 * np.array(IY_orig.shape[:2]) / self.shape
+        IX = cv2.resize(IX_orig, (self.height, self.width))
+        IY = cv2.resize(IY_orig, (self.height, self.width))
+
+        cv2.imwrite(os.path.join(path,"ix_res.jpg"), IX)
+        cv2.imwrite(os.path.join(path,"iy_res.jpg"), IY)
+
+        # CNN feature
+        # propagate the images through VGG16
+        IX = np.expand_dims(IX, axis=0)
+        IY = np.expand_dims(IY, axis=0)
+        cnn_input = np.concatenate((IX, IY), axis=0)
+        with tf.Session() as sess:
+            feed_dict = {self.cnnph: cnn_input}
+            D1, D2, D3 = sess.run([
+                self.vgg.pool3, self.vgg.pool4, self.vgg.pool5_1
+            ], feed_dict=feed_dict)
+
+        # flatten
+        DX1, DY1 = np.reshape(D1[0], [-1, 256]), np.reshape(D1[1], [-1, 256])
+        DX2, DY2 = np.reshape(D2[0], [-1, 512]), np.reshape(D2[1], [-1, 512])
+        DX3, DY3 = np.reshape(D3[0], [-1, 512]), np.reshape(D3[1], [-1, 512])
+
+        # normalization
+        DX1, DY1 = DX1 / np.std(DX1), DY1 / np.std(DY1)
+        DX2, DY2 = DX2 / np.std(DX2), DY2 / np.std(DY2)
+        DX3, DY3 = DX3 / np.std(DX3), DY3 / np.std(DY3)
+
+
+        # compute feature space distance
+        PD1 = pairwise_distance(DX1, DY1)
+        PD2 = pd_expand(pairwise_distance(DX2, DY2), 2)
+        PD3 = pd_expand(pairwise_distance(DX3, DY3), 4)
+        PD = 1.414 * PD1 + PD2 + PD3
+
+        seq = np.array([[i, j] for i in range(28) for j in range(28)], dtype='int32')
+
+        X = np.array(seq, dtype='float32') * 8.0 + 4.0
+        Y = np.array(seq, dtype='float32') * 8.0 + 4.0
+
+        # normalize
+        X = (X - 112.0) / 224.0
+        Y = (Y - 112.0) / 224.0
+
+        # prematch and select points
+        C_all, quality = match(PD)
+        tau_max = np.max(quality)
+        while np.where(quality >= tau_max)[0].shape[0] <= 128: tau_max -= 0.01
+
+        C = C_all[np.where(quality >= tau_max)]
+        cnt = C.shape[0]
+
+        # select prematched feature points
+        X, Y = X[C[:, 1]], Y[C[:, 0]]
+        PD = PD[np.repeat(np.reshape(C[:, 1], [cnt, 1]), cnt, axis=1),
+                np.repeat(np.reshape(C[:, 0], [1, cnt]), cnt, axis=0)]
+
+        N = X.shape[0]
+        M = Y.shape[0]
+        assert M == N
+
+        # precalculation of feature match
+        C_all, quality = match(PD)
+        # compute \hat{\theta} and \delta
+        tau_min = np.min(quality)
+        tau_max = np.max(quality)
+        while np.where(quality >= tau_max)[0].shape[0] <= 0.5 * cnt: tau_max -= 0.01
+        tau = tau_max
+        delta = (tau_max - tau_min) / 10.0
+        delta=0
+
+        C = C_all[np.where(quality >= tau_max)]
+        print("Starting images")
+
+        IX_with_points = IX_orig.copy()
+        IY_with_points = IY_orig.copy()
+        for i,j in product(range(28), repeat=2):
+            c_i = int((i + 0.5) * (IX_with_points.shape[0]/28))
+            c_j = int((j + 0.5) * (IX_with_points.shape[1]/28))
+            cv2.circle(IX_with_points, center=(c_i,c_j),radius=2, color=(255,0,0))
+
+        for i,j in product(range(28), repeat=2):
+            c_i = int((i + 0.5) * (IY_with_points.shape[0]/28))
+            c_j = int((j + 0.5) * (IY_with_points.shape[1]/28))
+            cv2.circle(IY_with_points, center=(c_i,c_j),radius=2, color=(0,0,255))
+
+        cv2.imwrite(os.path.join(path,"ix.jpg"), IX_with_points)
+        cv2.imwrite(os.path.join(path,"iy.jpg"), IY_with_points)
+
+
+
+        matched = np.hstack([IX_with_points,IY_with_points])
+        for x,y in C:
+            if y==75:
+                continue
+            x_row, x_col = np.unravel_index(x, (28,28))
+            y_row, y_col = np.unravel_index(y, (28,28))
+            c_i_x = int((x_row + 0.5) * (IX_with_points.shape[0]/28))
+            c_j_x = int((x_col + 0.5) * (IX_with_points.shape[1]/28))
+            c_i_y = int((y_row + 0.5) * (IY_with_points.shape[0]/28) + IY_with_points.shape[0])
+            c_j_y = int((y_col + 0.5) * (IY_with_points.shape[1]/28))
+            cv2.line(matched,(c_i_x,c_j_x), (c_i_y,c_j_y), (255,255,0))
+
+        cv2.imwrite(os.path.join(path,"matched.jpg"), matched)
+        print("DONE")
